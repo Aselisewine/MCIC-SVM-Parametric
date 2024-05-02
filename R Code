@@ -1,1 +1,334 @@
+library(e1071)
+library(survival)
+library(dplyr)
+library(icenReg)
+library(thregI)
+library(caret)
+library(mgcv)
+library(caTools)
+library(MASS)
+
+
+# function to find the left and right end points
+
+LR.MIC=function(t,ub){# function to find the left and right end points
+  S = 0
+  S1 = 0
+  while(S<= min(t,ub)){
+    unif = runif(1,0.1,0.25)
+    S = S1 + unif
+    S1 = S 
+  }
+  if(t > ub){ # includes t = Inf
+    a = c(S,1/0)
+  }else if(t <= 0.1){
+    a = c(0,S)
+  }else{
+    a = c(S-unif,S)
+  }
+  return(a)
+}
+
+
+
+
+# data generation code
+
+data.MIC.Par = function(n,alpha,beta1,beta2,setting){ 
+  
+  z1 = rnorm(n,mean=0,sd=1) 
+  z2 = rnorm(n,mean=0,sd=1)
+  piz = rep(NA,n) 
+  
+  if(setting==1){
+    piz = (exp(0.3-(5*z1)-(3*z2))/(1+exp(0.3-(5*z1)-(3*z2))))
+  }
+  
+  if(setting==2){
+    piz = (exp(0.3+(10*z1*z2)-(5*z1*z2))/(1+exp(0.3+(10*z1*z2)-(5*z1*z2))))
+  }
+  
+  U = runif(n,0,1)
+  L = rep(NA,n) # left end point 
+  R = rep(NA,n) # right end point
+  DL = rep(NA,n) # left censoring indicator
+  DI = rep(NA,n) # interval censoring indicator
+  J = rep(NA,n) # cure indicator
+  Sp = rep(NA,n) # overall survival function
+  S1 = rep(NA,n) # susceptible survival function
+  
+  for(i in 1:n){
+    if(U[i]<= 1-piz[i]){
+      T = 1/0
+      ans = LR.MIC(t=T,ub=2.5)
+      L[i] = ans[1]
+      R[i] = ans[2]
+      J[i] = 0
+    }else{
+      T =  rweibull(1,shape=alpha,scale= exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha) )
+      ans = LR.MIC(t=T,ub=2.5)
+      L[i] = ans[1]
+      R[i] = ans[2]
+      J[i] = 1
+    }
+    
+    if(L[i]==0){
+      DL[i] = 1
+      DI[i] = 0
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((R[i]/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+      S1[i] =  (exp(-((R[i]/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+    }else if(R[i]==1/0){
+      DL[i] = 0
+      DI[i] = 0
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((L[i]/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+      S1[i] =  (exp(-((L[i]/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+    }else{
+      DL[i] = 0
+      DI[i] = 1
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((((L[i]+R[i])/2)/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+      S1[i] = (exp(-((((L[i]+R[i])/2)/exp(-((beta1*z1[i])+(beta2*z2[i]))/alpha))^alpha)))
+    }
+  }#end of for
+  return(data.frame(L,R,DL,DI,z1,z2,J,uncure=piz,Sp=Sp,S1=S1))
+}#end of function
+
+
+data.MIC.ParCorr = function(n,alpha,beta1,beta2,beta3,beta4,beta5,beta6,beta7,beta8,beta9,beta10,setting){ 
+  
+  c<-10
+  SigmaMat=matrix(1:5*c, nrow=c,ncol=c) #variance-covariance matrix 
+  for(i in 1:nrow(SigmaMat)){
+    for(j in 1:ncol(SigmaMat)){
+      if (i==j){
+        SigmaMat[i,j]<-1} else {
+          SigmaMat[i,j]<-0.65^abs(i-j)}
+    }
+  }
+  
+  muV=matrix(1:5*c, nrow=1,ncol=c)
+  for (j in 1:ncol(muV)) {
+    muV[,j]<-0
+  }
+  
+  z <- mvrnorm(n,mu = muV,
+               Sigma = SigmaMat)
+  
+  colnames(z) <- c('z1', 'z2', 'z3', 'z4', 'z5','z6','z7','z8','z9','z10')
+  
+  piz = rep(NA,n)   
+
+if(setting==3){ # complex classification boundary with high dimension and correlation
+piz = exp(-exp(-0.8*z[,1]*z[,2]+1.1*z[,2]*z[,4]+0.5*z[,3]+0.2*z[,7]*z[,7]-1.3*sin(z[,5]*z[,6])+1.9*cos(z[,7]*z[,8])-1.5*exp(z[,5]*z[,6]*z[,7])-1.6*z[,7]*z[,8]*z[,9]*z[,10]+0.8*(z[,6]*z[,7])*(z[,8]*z[,9]*z[,8]*z[,9])+1.8*cos(z[,5]*z[,6]*z[,7]*z[,8]*z[,9])+1.2*(abs(z[,6]*z[,7]*z[,8]*z[,9]*z[,10])^0.5)-2.4))
+  }
+  
+  U = runif(n,0,1)
+  L = rep(NA,n) # left end point 
+  R = rep(NA,n) # right end point
+  DL = rep(NA,n) # left censoring indicator
+  DI = rep(NA,n) # interval censoring indicator
+  J = rep(NA,n) # cure indicator
+  Sp = rep(NA,n) # overall survival function
+  S1 = rep(NA,n) # susceptible survival function
+  
+  for(i in 1:n){
+    if(U[i]<= 1-piz[i]){
+      T = 1/0
+      ans = LR.MIC(t=T,ub=2.5)
+      L[i] = ans[1]
+      R[i] = ans[2]
+      J[i] = 0
+    }else{
+      T =  rweibull(1,shape=alpha,scale= exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha) )
+      ans = LR.MIC(t=T,ub=2.5)
+      L[i] = ans[1]
+      R[i] = ans[2]
+      J[i] = 1
+    }
+    
+    if(L[i]==0){
+      DL[i] = 1
+      DI[i] = 0
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((R[i]/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+      S1[i] =  (exp(-((R[i]/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+    }else if(R[i]==1/0){
+      DL[i] = 0
+      DI[i] = 0
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((L[i]/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+      S1[i] = (exp(-((L[i]/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+    }else{
+      DL[i] = 0
+      DI[i] = 1
+      Sp[i] = (1-piz[i]) + (piz[i]*exp(-((((L[i]+R[i])/2)/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+      S1[i] = (exp(-((((L[i]+R[i])/2)/exp(-((beta1*z[,1][i])+(beta2*z[,2][i])+(beta3*z[,3][i])+(beta4*z[,4][i])+(beta5*z[,5][i])+(beta6*z[,6][i])+(beta7*z[,7][i])+(beta8*z[,8][i])+(beta9*z[,9][i])+(beta10*z[,10][i]))/alpha))^alpha)))
+    }
+  }#end of for
+  return(data.frame(L,R,DL,DI,z,J,uncure=piz,Sp=Sp,S1=S1))
+}#end of function
+
+
+## EM SVM
+em.svm.MIC.par <-function(TimeL,TimeR,StatusL,StatusI,X,X1,Z,Z1,uncureprob,alpha,beta,offsetvar,emmax,eps,mydata,testdata) 
+{   
+  w <- StatusL + StatusI
+  n <- length(StatusL)
+  m <- dim(testdata)[1]
+  
+  convergence<- 1000;i <-1
+  while (convergence > eps & i < emmax){  
+    
+    H = drop((TimeL^alpha)*exp((beta)%*%t(X[,-1])))
+    survival<- exp(-H)
+    
+    ## E step 
+    w <- StatusL+StatusI+(1-StatusL-StatusI)*(uncureprob*survival)/((1-uncureprob)+uncureprob*survival) # conditional probability of uncure
+    ## M step
+    multipleuncureprob=matrix(1:5*n, nrow=n,ncol=5)
+    for (j in 1:n){multipleuncureprob[j,]<-rbinom(5,size=1,prob=w[j])}
+    uncureprob1<-c(1,1)
+    uncureprob2<-c(1,1)
+    uncureprob3<-c(1,1)
+    uncureprob4<-c(1,1)
+    uncureprob5<-c(1,1)
+    for (j in 1:n){uncureprob1[j]=multipleuncureprob[j,1]}
+    for (j in 1:n){uncureprob2[j]=multipleuncureprob[j,2]}
+    for (j in 1:n){uncureprob3[j]=multipleuncureprob[j,3]}
+    for (j in 1:n){uncureprob4[j]=multipleuncureprob[j,4]}
+    for (j in 1:n){uncureprob5[j]=multipleuncureprob[j,5]}
+    
+    for (j in 1:n){uncureprob1[j]=uncureprob1[j]*2-1}
+    for (j in 1:n){uncureprob2[j]=uncureprob2[j]*2-1}
+    for (j in 1:n){uncureprob3[j]=uncureprob3[j]*2-1}
+    for (j in 1:n){uncureprob4[j]=uncureprob4[j]*2-1}
+    for (j in 1:n){uncureprob5[j]=uncureprob5[j]*2-1}
+    
+    uncureprob1<-as.factor(uncureprob1)
+    uncureprob2<-as.factor(uncureprob2)
+    uncureprob3<-as.factor(uncureprob3)
+    uncureprob4<-as.factor(uncureprob4)
+    uncureprob5<-as.factor(uncureprob5)
+    update_cureb<-c(1,1)
+    update_pred<-c(1,1)
+    
+    obj<-tune(svm,uncureprob1~Z[,-1],kernel="radial", data=mydata,ranges=list(gamma=2^(-6:-4),cost=2^(4:6)),tunecontrol=tune.control(sampling = "cross", cross = 10))
+    bg<-obj$best.parameters[1]  
+    bc<-obj$best.parameters[2]      
+    
+    mod1<-svm(Z[,-1],uncureprob1,kernel="radial",gamma=bg[[1]],cost=bc[[1]], probability=TRUE)
+    pred1<-predict(mod1,Z[,-1],probability = TRUE)
+    cpred1<-predict(mod1,newdata=Z1[,-1],probability = TRUE)
+    proba1<-attr(pred1, "probabilities")
+    cproba1<-attr(cpred1, "probabilities")
+    update_cureb1<-c(1,1)
+    update_pred1<-c(1,1)
+    for (z in 1:n){update_cureb1[z]<-proba1[z,colnames(proba1)==1]}
+    for (k in 1:m){update_pred1[k]<-cproba1[k,colnames(cproba1)==1]}
+    uncureprob1<-as.numeric(as.character(uncureprob1))
+    
+    mod2<-svm(Z[,-1],uncureprob2,kernel="radial",gamma=bg[[1]],cost=bc[[1]],probability=TRUE)
+    pred2<-predict(mod2,Z[,-1],probability = TRUE)
+    cpred2<-predict(mod2,newdata=Z1[,-1],probability = TRUE)
+    proba2<-attr(pred2, "probabilities")
+    cproba2<-attr(cpred2, "probabilities")
+    update_cureb2<-c(1,1)
+    update_pred2<-c(1,1)
+    for (z in 1:n){update_cureb2[z]<-proba2[z,colnames(proba2)==1]}
+    for (k in 1:m){update_pred2[k]<-cproba2[k,colnames(cproba2)==1]}
+    uncureprob2<-as.numeric(as.character(uncureprob2))
+    
+    mod3<-svm(Z[,-1],uncureprob3,kernel="radial",gamma=bg[[1]],cost=bc[[1]],probability=TRUE)
+    pred3<-predict(mod3,Z[,-1],probability = TRUE)
+    cpred3<-predict(mod3,newdata=Z1[,-1],probability = TRUE)
+    proba3<-attr(pred3, "probabilities")
+    cproba3<-attr(cpred3, "probabilities")
+    update_cureb3<-c(1,1)
+    update_pred3<-c(1,1)
+    for (z in 1:n){update_cureb3[z]<-proba3[z,colnames(proba3)==1]}
+    for (k in 1:m){update_pred3[k]<-cproba3[k,colnames(cproba3)==1]}
+    uncureprob3<-as.numeric(as.character(uncureprob3))
+    
+    mod4<-svm(Z[,-1],uncureprob4,kernel="radial",gamma=bg[[1]],cost=bc[[1]],probability=TRUE)
+    pred4<-predict(mod4,Z[,-1],probability = TRUE)
+    cpred4<-predict(mod4,newdata=Z1[,-1],probability = TRUE)
+    proba4<-attr(pred4, "probabilities")
+    cproba4<-attr(cpred4, "probabilities")
+    update_cureb4<-c(1,1)
+    update_pred4<-c(1,1)
+    for (z in 1:n){update_cureb4[z]<-proba4[z,colnames(proba4)==1]}
+    for (k in 1:m){update_pred4[k]<-cproba4[k,colnames(cproba4)==1]}
+    uncureprob4<-as.numeric(as.character(uncureprob4))
+    
+    mod5<-svm(Z[,-1],uncureprob5,kernel="radial",gamma=bg[[1]],cost=bc[[1]],probability=TRUE)
+    pred5<-predict(mod5,Z[,-1],probability = TRUE)
+    cpred5<-predict(mod5,newdata=Z1[,-1],probability = TRUE)
+    proba5<-attr(pred5, "probabilities")
+    cproba5<-attr(cpred5, "probabilities")
+    update_cureb5<-c(1,1)
+    update_pred5<-c(1,1)
+    for (z in 1:n){update_cureb5[z]<-proba5[z,colnames(proba5)==1]}
+    for (k in 1:m){update_pred5[k]<-cproba5[k,colnames(cproba5)==1]}
+    uncureprob5<-as.numeric(as.character(uncureprob5))
+    
+    for (z in 1:n){update_cureb[z]<-(update_cureb1[z]+update_cureb2[z]+update_cureb3[z]+update_cureb4[z]+update_cureb5[z])/5}
+    for (k in 1:m){update_pred[k]<-(update_pred1[k]+update_pred2[k]+update_pred3[k]+update_pred4[k]+update_pred5[k])/5}
+    
+    # latency part 
+    
+    Q1 = function(par=c(alp,b1,b2,b3,b4,b5,b6,b7,b8,b9,b10)){
+      bb = c(par[2],par[3],par[4],par[5],par[6],par[7],par[8],par[9],par[10],par[11])
+      HL = drop((TimeL^par[1])*exp((bb)%*%t(X[,-1])))
+      HR = drop((TimeR^par[1])*exp((bb)%*%t(X[,-1])))
+      S.L = exp(-HL)
+      S.R = exp(-HR)
+      out = sum(StatusL*log(1-S.R)) + sum(StatusI*log(S.L-S.R)) + sum((1-StatusL-StatusI)*w*log(S.L))
+      return(-out)
+    } 
+    
+    update_latency = optim(par=c(alpha,beta[1],beta[2],beta[3],beta[4],beta[5],beta[6],beta[7],beta[8],beta[9],beta[10]),fn=Q1,method="Nelder-Mead")$par
+    
+    convergence<-sum(c(mean(update_cureb)-mean(uncureprob),update_latency-c(alpha,beta))^2)
+    
+    uncureprob <- update_cureb
+    uncurepred <- update_pred
+    alpha = update_latency[1]
+    beta <- c(update_latency[2],update_latency[3],update_latency[4],update_latency[5],update_latency[6],update_latency[7],update_latency[8],update_latency[9],update_latency[10],update_latency[11]) 
+    
+    i <- i+1
+    #print(i)
+  }
+  
+  TimeK = rep(NA,n)
+  for(k in 1:n){
+    if(TimeR[k]==Inf){
+      TimeK[k] = TimeL[k]
+    }else if(TimeL[k]==0){
+      TimeK[k] = TimeR[k]
+    }else{
+      TimeK[k] = (TimeL[k]+TimeR[k])/2
+    }
+  }
+  
+  
+  TimeL1<-testdata$L
+  TimeR1<-testdata$R
+  
+  TimeK1 = rep(NA,m)
+  for(j in 1:m){
+    if(TimeR1[j]==Inf){
+      TimeK1[j] = TimeL1[j]
+    }else if(TimeL[j]==0){
+      TimeK1[j] = TimeR1[j]
+    }else{
+      TimeK1[j] = (TimeL1[j]+TimeR1[j])/2
+    }
+  }
+  
+  BB = drop((exp((beta)%*%t(X[,-1])))^(-1/alpha))
+  BT = drop((exp((beta)%*%t(X1[,-1])))^(-1/alpha))
+  S1 = exp(-((TimeK/BB)^alpha)) # survival prob. of the susceptible group
+  S1.pred = exp(-((TimeK1/BT)^alpha)) 
+  Sp = (1-uncureprob)+(uncureprob*S1) # survival prob. of the population
+  
+  em.svm <- list(latencyfit=c(alpha,beta),Uncureprob=uncureprob,Uncurepred=uncurepred,Sp=Sp,S1=S1,S1.pred=S1.pred,tau=convergence, Mod1=mod1, Mod2=mod2, Mod3=mod3, Mod4=mod4, Mod5=mod5)
+}
+
 
