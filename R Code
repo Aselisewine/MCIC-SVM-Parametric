@@ -329,4 +329,132 @@ em.svm.MIC.par <-function(TimeL,TimeR,StatusL,StatusI,X,X1,Z,Z1,uncureprob,alpha
   em.svm <- list(latencyfit=c(alpha,beta),Uncureprob=uncureprob,Uncurepred=uncurepred,Sp=Sp,S1=S1,S1.pred=S1.pred,tau=convergence, Mod1=mod1, Mod2=mod2, Mod3=mod3, Mod4=mod4, Mod5=mod5)
 }
 
+# A5. SVM SMCURE
+
+smcure.svm.MIC.par <-function(formula,cureform,mydata,testdata,alpha,beta,offset=NULL,na.action=na.omit,Var=TRUE,emmax=500,eps=1e-3,nboot=100)
+{
+  call <- match.call()
+  cat("Program is running..be patient...")
+  ## prepare data
+  mydata <- na.action(mydata)
+  n <- dim(mydata)[1]
+  m <- dim(testdata)[1]
+  mf <- model.frame(formula,mydata)
+  mp <- model.frame(formula,testdata)
+  cvars <- all.vars(cureform)
+  Z <- as.matrix(cbind(rep(1,n),mydata[,cvars]))
+  Z1 <- as.matrix(cbind(rep(1,m),testdata[,cvars]))
+  colnames(Z) <- c("(Intercept)",cvars)
+  if(!is.null(offset)) {
+    offsetvar <- all.vars(offset)
+    offsetvar<-mydata[,offsetvar]}
+  else offsetvar <- NULL
+  Y <- model.extract(mf,"response")
+  X <- model.matrix(attr(mf,"terms"), mf)
+  X1 <- model.matrix(attr(mp,"terms"), mp)
+  if (!inherits(Y, "Surv")) stop("Response must be a survival object")
+  
+  TimeL = mydata[,1]
+  TimeR = mydata[,2]
+  StatusL = mydata[,3]
+  StatusI = mydata[,4]
+    
+  bnm <- colnames(Z)
+  nb <- ncol(Z)
+  
+  betanm <- colnames(X)[-1]
+  nbeta <- ncol(X)-1
+  
+  
+  ## initial value 
+  w <- StatusL+StatusI
+  nw<-c(1,1)
+  for(i in 1: n) {nw[i]= w[i]*2-1}
+  nw <- as.factor(nw)
+  obj<-tune(svm,nw~Z[,-1],kernel="radial", data=mydata,ranges=list(gamma=2^(-6:-4),cost=2^(4:6)),tunecontrol=tune.control(sampling = "cross", cross = 10))
+  bg<-obj$best.parameters[1]  
+  bc<-obj$best.parameters[2]
+  
+  mod <- svm(Z[,-1],nw,kernel="radial",gamma=bg[[1]],cost=bc[[1]], probability=TRUE)
+  pred <- predict(mod,Z[,-1], probability = TRUE)
+  proba<-attr(pred, "probabilities")
+  uncureprob<-c(1,1)
+  
+  for (i in 1:n){uncureprob[i]<-proba[i,colnames(proba)==1]}
+  nw<-as.numeric(as.character(nw))
+    
+  ## do EM algo
+  emfit <- em.svm.MIC.par(TimeL,TimeR,StatusL,StatusI,X,X1,Z,Z1,uncureprob,alpha,beta,offsetvar,emmax,eps,mydata,testdata)
+  latency = emfit$latencyfit
+  alpha = latency[1]
+  beta <- c(latency[2],latency[3])
+  UN<-emfit$Uncureprob
+  PRED<-emfit$Uncurepred
+  S0<-emfit$S0
+  MOD1<-emfit$Mod1
+  MOD2<-emfit$Mod2
+  MOD3<-emfit$Mod3
+  MOD4<-emfit$Mod4
+  MOD5<-emfit$Mod5
+  Sp = emfit$Sp
+  S1 = emfit$S1
+  S1.pred = emfit$S1.pred
+  
+  
+  if(Var){
+    latency_boot<-matrix(rep(0,nboot*(nbeta+1)), nrow=nboot)
+    uncure_boot<-matrix(rep(0,nboot*n), nrow=nboot)
+    iter <- matrix(rep(0,nboot),ncol=1)
+    
+    tempdata <-cbind(TimeL,TimeR,StatusL,StatusI,X,Z)
+    data1<-subset(tempdata,(StatusL+StatusI)==1);data0<-subset(tempdata,(StatusL+StatusI)==0)
+    n1<-nrow(data1);n0<-nrow(data0)  
+    i<-1
+    while (i<=nboot){
+      print(i)
+      id1<-sample(1:n1,n1,replace=TRUE);id0<-sample(1:n0,n0,replace=TRUE)
+      bootdata<-rbind(data1[id1,],data0[id0,])
+      
+      bootZ <- bootdata[,bnm]
+      bootX <- as.matrix(cbind(rep(1,n),bootdata[,betanm]))
+      bootfit <- em.svm.MIC.par(bootdata[,1],bootdata[,2],bootdata[,3],bootdata[,4],bootX,X1,bootZ,Z1,uncureprob,alpha,beta,offsetvar,emmax,eps,mydata,testdata)
+      latency_boot[i,] <- bootfit$latencyfit
+      uncure_boot[i,] = bootfit$Uncureprob
+      if (bootfit$tau<eps){
+        i<-i+1}
+    }#end of while
+    
+    latency_var <- apply(latency_boot, 2, var) 
+    uncure_var = apply(uncure_boot,2,var)
+    latency_sd <- sqrt(latency_var)
+    uncure_sd = sqrt(uncure_var)
+    lower_uncure = UN - (1.96*uncure_sd)
+    upper_uncure = UN + (1.96*uncure_sd)
+    
+  }
+  
+  fit<-list()
+  class(fit) <- c("smcure.svm.MIC.par")
+  
+  fit$latency <- latency
+  if(Var){
+    fit$latency_var <- latency_var
+    fit$latency_sd <- latency_sd
+    fit$latency_zvalue <- fit$latency/latency_sd
+    fit$latency_pvalue <- (1-pnorm(abs(fit$latency_zvalue)))*2
+    fit$lower_uncure = lower_uncure
+    fit$upper_uncure = upper_uncure
+    }
+  cat(" done.\n")
+  fit$call <- call
+  fit$UN<- UN
+  fit$PRED<- PRED
+  fit$Sp = Sp
+  fit$S1 = S1
+  fit$S1.pred = S1.pred
+  fit$S0 = S0
+  final<- fit$UN
+  fit
+}
+
 
